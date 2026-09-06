@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>New recurring chore</title>
+</head>
+<body>
+  <h1>New recurring chore</h1>
+  {% if error %}<p role="alert">{{ error }}</p>{% endif %}
+  <form method="post" action="{% url 'recurring_create' %}">
+    {% csrf_token %}
+    <label for="id_title">Title</label>
+    <input id="id_title" name="title" maxlength="120" required value="{{ title|default:'' }}">
+    <label for="id_notes">Notes</label>
+    <textarea id="id_notes" name="notes">{{ notes|default:'' }}</textarea>
+    <label for="id_interval">Every</label>
+    <select id="id_interval" name="interval_days">
+      <option value="1" {% if interval_days == "1" %}selected{% endif %}>Daily</option>
+      <option value="7" {% if interval_days == "7" or not interval_days %}selected{% endif %}>Weekly</option>
+      <option value="14" {% if interval_days == "14" %}selected{% endif %}>Every 2 weeks</option>
+      <option value="30" {% if interval_days == "30" %}selected{% endif %}>Monthly</option>
+    </select>
+    <label for="id_next_due">Next due</label>
+    <input id="id_next_due" type="date" name="next_due" required value="{{ next_due|default:'' }}">
+    <fieldset>
+      <legend>Rotation (alphabetical order)</legend>
+      {% for r in roommates %}
+      <label><input type="checkbox" name="rotation" value="{{ r.id }}" {% if r.id in picked %}checked{% endif %}> {{ r.name }}</label>
+      {% endfor %}
+    </fieldset>
+    <button type="submit">Create</button>
+  </form>
+  <p><a href="{% url 'chore_list' %}">Back</a></p>
+</body>
+</html>

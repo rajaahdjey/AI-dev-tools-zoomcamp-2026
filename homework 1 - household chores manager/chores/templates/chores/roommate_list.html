@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Roommates</title>
+</head>
+<body>
+  <h1>Roommates</h1>
+  {% if error %}<p role="alert">{{ error }}</p>{% endif %}
+  <form method="post" action="{% url 'roommate_list' %}">
+    {% csrf_token %}
+    <label for="id_name">Name</label>
+    <input id="id_name" name="name" maxlength="80" required>
+    <button type="submit">Add roommate</button>
+  </form>
+  <ul>
+    {% for roommate in roommates %}
+    <li>
+      {{ roommate.name }}
+      <form method="post" action="{% url 'roommate_delete' roommate.pk %}" style="display:inline">
+        {% csrf_token %}
+        <button type="submit">Delete</button>
+      </form>
+    </li>
+    {% empty %}
+    <li>No roommates yet.</li>
+    {% endfor %}
+  </ul>
+</body>
+</html>

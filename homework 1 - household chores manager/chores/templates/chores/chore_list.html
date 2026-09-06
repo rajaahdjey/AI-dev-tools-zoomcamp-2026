@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Chores</title>
+</head>
+<body>
+  <h1>Chores</h1>
+  <nav>
+    <a href="{% url 'chore_create' %}">New chore</a>
+    <a href="{% url 'recurring_create' %}">New recurring</a>
+    <a href="{% url 'roommate_list' %}">Roommates</a>
+  </nav>
+  {% if error %}<p role="alert">{{ error }}</p>{% endif %}
+
+  <form method="get" action="{% url 'chore_list' %}">
+    <label for="id_as">Acting as</label>
+    <select id="id_as" name="as">
+      <option value="">— pick —</option>
+      {% for r in roommates %}
+      <option value="{{ r.name }}" {% if r.name == actor %}selected{% endif %}>{{ r.name }}</option>
+      {% endfor %}
+    </select>
+    <label for="id_assignee">Assignee</label>
+    <select id="id_assignee" name="assignee">
+      <option value="">Everyone</option>
+      {% for r in roommates %}
+      <option value="{{ r.id }}" {% if r.id|stringformat:"s" == assignee_filter %}selected{% endif %}>{{ r.name }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Apply</button>
+  </form>
+
+  <h2>Done counts</h2>
+  <ul>
+    {% for name, count in fairness %}
+    <li>{{ name }}: {{ count }}</li>
+    {% empty %}
+    <li>No roommates yet.</li>
+    {% endfor %}
+  </ul>
+
+  <h2>Open</h2>
+  <ul>
+    {% for chore in open_chores %}
+    <li>
+      {{ chore.title }} — {{ chore.assignee.name }}
+      {% if chore.due_date %}
+        (due {{ chore.due_date|date:"Y-m-d" }}{% if chore.due_date < today %} OVERDUE{% endif %})
+      {% endif %}
+      {% if chore.notes %} — {{ chore.notes }}{% endif %}
+      <form method="post" action="{% url 'chore_done' chore.pk %}" style="display:inline">
+        {% csrf_token %}
+        <input type="hidden" name="as" value="{{ actor }}">
+        <input type="hidden" name="assignee_filter" value="{{ assignee_filter }}">
+        <button type="submit">Done</button>
+      </form>
+    </li>
+    {% empty %}
+    <li>Nothing open.</li>
+    {% endfor %}
+  </ul>
+
+  <h2>Done</h2>
+  <ul>
+    {% for chore in done_chores %}
+    <li>
+      {{ chore.title }} — {{ chore.assignee.name }}
+      (by {{ chore.actor_name }} at {{ chore.done_at|date:"Y-m-d H:i" }})
+      <form method="post" action="{% url 'chore_reopen' chore.pk %}" style="display:inline">
+        {% csrf_token %}
+        <input type="hidden" name="as" value="{{ actor }}">
+        <input type="hidden" name="assignee_filter" value="{{ assignee_filter }}">
+        <button type="submit">Reopen</button>
+      </form>
+    </li>
+    {% empty %}
+    <li>Nothing done yet.</li>
+    {% endfor %}
+  </ul>
+
+  <h2>Recurring</h2>
+  <ul>
+    {% for template in templates %}
+    <li>
+      {{ template.title }} — every {{ template.interval_days }} days, next {{ template.next_due|date:"Y-m-d" }},
+      rotation: {% for m in template.rotation_members %}{{ m.name }}{% if not forloop.last %}, {% endif %}{% empty %}(paused){% endfor %}
+      <form method="post" action="{% url 'recurring_delete' template.pk %}" style="display:inline">
+        {% csrf_token %}
+        <button type="submit">Delete</button>
+      </form>
+    </li>
+    {% empty %}
+    <li>No recurring chores.</li>
+    {% endfor %}
+  </ul>
+</body>
+</html>

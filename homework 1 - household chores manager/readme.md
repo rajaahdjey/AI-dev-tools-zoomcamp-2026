@@ -45,8 +45,9 @@ Templates: `chores/templates/chores/` — list (+ overdue flag, fairness, recurr
 Not implemented yet. When built:
 
 ```bash
-python manage.py migrate
-python manage.py runserver
+uv sync
+uv run python manage.py migrate
+uv run python manage.py runserver
 ```
 
 Then: create roommates Ana/Bo → create chore "Trash" assigned Ana due today → mark done as Ana → reopen as Bo. Overdue chores flag on `/`; fairness block counts done per roommate; weekly `RecurringChore` "Bathroom" rotation [Ana, Bo] generates Ana instance, then Bo on next due.
