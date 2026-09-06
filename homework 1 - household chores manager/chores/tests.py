@@ -147,3 +147,89 @@ class GenerationTests(TestCase):
         self.client.post(f"/recurring/{template.pk}/delete")
         self.assertEqual(RecurringChore.objects.count(), 0)
         self.assertEqual(Chore.objects.count(), 0)
+
+
+class AssigneeFilterTests(TestCase):
+    def test_filter_limits_open_and_done_to_roommate(self):
+        from django.utils import timezone
+
+        ana = Roommate.objects.create(name="Ana")
+        bo = Roommate.objects.create(name="Bo")
+        open_ana = Chore.objects.create(title="OpenAna", assignee=ana)
+        open_bo = Chore.objects.create(title="OpenBo", assignee=bo)
+        done_ana = Chore.objects.create(
+            title="DoneAna",
+            assignee=ana,
+            status=Chore.DONE,
+            actor_name="Ana",
+            done_at=timezone.now(),
+        )
+        done_bo = Chore.objects.create(
+            title="DoneBo",
+            assignee=bo,
+            status=Chore.DONE,
+            actor_name="Bo",
+            done_at=timezone.now(),
+        )
+        response = self.client.get(f"/?assignee={bo.id}")
+        self.assertEqual(list(response.context["open_chores"]), [open_bo])
+        self.assertEqual(list(response.context["done_chores"]), [done_bo])
+        response = self.client.get("/?assignee=abc")
+        self.assertEqual(
+            list(response.context["open_chores"]), [open_ana, open_bo]
+        )
+        self.assertEqual(
+            {c.title for c in response.context["done_chores"]},
+            {"DoneAna", "DoneBo"},
+        )
+
+
+class RoommateCreateValidationTests(TestCase):
+    def test_empty_and_duplicate_names_rejected(self):
+        response = self.client.post("/roommates", {"name": ""})
+        self.assertContains(response, "Name is required.")
+        response = self.client.post("/roommates", {"name": "   "})
+        self.assertContains(response, "Name is required.")
+        self.assertEqual(Roommate.objects.count(), 0)
+        response = self.client.post("/roommates", {"name": "Ana"})
+        self.assertEqual(response.status_code, 302)
+        response = self.client.post("/roommates", {"name": "Ana"})
+        self.assertContains(response, "already exists")
+        self.assertEqual(Roommate.objects.count(), 1)
+
+
+class RecurringCreateValidationTests(TestCase):
+    def test_invalid_templates_rejected_valid_accepted(self):
+        from datetime import date, timedelta
+
+        ana = Roommate.objects.create(name="Ana")
+        bo = Roommate.objects.create(name="Bo")
+        today = date.today().isoformat()
+        past = (date.today() - timedelta(days=1)).isoformat()
+        base = {
+            "title": "Bathroom",
+            "notes": "",
+            "interval_days": "7",
+            "next_due": today,
+            "rotation": [str(ana.id), str(bo.id)],
+        }
+        response = self.client.post("/recurring/new", {**base, "title": ""})
+        self.assertContains(response, "Title is required.")
+        response = self.client.post(
+            "/recurring/new", {**base, "interval_days": "5"}
+        )
+        self.assertContains(response, "Interval must be")
+        response = self.client.post("/recurring/new", {**base, "rotation": []})
+        self.assertContains(response, "at least one")
+        response = self.client.post("/recurring/new", {**base, "next_due": past})
+        self.assertContains(response, "cannot be in the past")
+        response = self.client.post("/recurring/new", {**base, "next_due": ""})
+        self.assertContains(response, "Next due date is required.")
+        self.assertEqual(RecurringChore.objects.count(), 0)
+        response = self.client.post(
+            "/recurring/new",
+            {**base, "rotation": [str(bo.id), str(ana.id)]},
+        )
+        self.assertEqual(response.status_code, 302)
+        template = RecurringChore.objects.get()
+        self.assertEqual(template.rotation, [ana.id, bo.id])
