@@ -3,17 +3,52 @@ info:
   title: Mini Kanban Board API
   version: 1.0.0
   description: >-
-    Backend contract expected by frontend/src/services/backend.js
-    (implemented today by frontend/src/services/mockBackend.js, mirroring
-    specifications.md §8). All timestamps are unix milliseconds (Date.now()).
+    Backend contract expected by frontend/src/services/backend.js, implemented
+    by backend/ (FastAPI, in-memory store seeded like the mock). Auth is bearer
+    tokens from POST /api/auth/login; every other endpoint requires one. All
+    timestamps are unix milliseconds (Date.now()).
     resetDemo() is localStorage-only demo state and has no HTTP equivalent;
     canMove/canEdit/canComment/isDevOps are pure client-side helpers, not endpoints.
 servers:
   - url: http://localhost:8000
     description: Local backend (frontend dev server runs on :5173)
 security:
-  - UserIdAuth: []
+  - BearerAuth: []
 paths:
+  /api/auth/login:
+    post:
+      summary: Log in
+      description: >-
+        Verify userId + password (PBKDF2-hashed server-side; seeded users use
+        "password123") and issue an opaque bearer token. The only endpoint
+        that needs no authentication.
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Token plus the public user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/auth/logout:
+    post:
+      summary: Log out
+      description: Revoke the caller's bearer token. Further use returns 401.
+      operationId: logout
+      responses:
+        '204':
+          description: Revoked. No body.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /api/users:
     get:
       summary: List users
@@ -185,15 +220,13 @@ paths:
           $ref: '#/components/responses/ValidationError'
 components:
   securitySchemes:
-    UserIdAuth:
-      type: apiKey
-      in: header
-      name: X-User-Id
+    BearerAuth:
+      type: http
+      scheme: bearer
       description: >-
-        v1 session: id of the acting user (selected in the user switcher,
-        passed as actorId in the client). Every endpoint requires an
-        authenticated user; unknown id -> 401 "Unknown user. Please pick a
-        user."
+        Opaque token from POST /api/auth/login, sent as
+        `Authorization: Bearer <token>`. Every endpoint except login requires
+        one; missing/invalid/revoked token -> 401.
   parameters:
     TaskId:
       name: id
@@ -385,3 +418,24 @@ components:
         error:
           type: string
           example: Only the assignee can modify this task.
+    LoginRequest:
+      type: object
+      required: [userId, password]
+      properties:
+        userId:
+          type: string
+          example: u-ana
+        password:
+          type: string
+          example: password123
+    TokenResponse:
+      type: object
+      required: [access_token, token_type, user]
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          example: bearer
+        user:
+          $ref: '#/components/schemas/User'
