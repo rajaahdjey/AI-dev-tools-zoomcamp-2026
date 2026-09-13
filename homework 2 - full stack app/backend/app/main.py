@@ -12,7 +12,7 @@ from .routers import auth as auth_router
 from .routers import tasks as tasks_router
 from .routers import users as users_router
 from .routers import admin as admin_router
-from .store import InMemoryStore
+from .store import SqlAlchemyStore
 
 
 def _error(status: int, message: str) -> JSONResponse:
@@ -37,9 +37,9 @@ async def _http_handler(_request: Request, exc: StarletteHTTPException) -> JSONR
     return _error(exc.status_code, detail)
 
 
-def create_app(seed: bool = True) -> FastAPI:
+def create_app(seed: bool = True, database_url: str | None = None) -> FastAPI:
     app = FastAPI(title="Mini Kanban Board API", version="1.0.0")
-    app.state.store = InMemoryStore(seed=seed)
+    app.state.store = SqlAlchemyStore(seed=seed, database_url=database_url)
     app.add_exception_handler(ApiError, _api_error_handler)
     app.add_exception_handler(RequestValidationError, _validation_handler)
     app.add_exception_handler(StarletteHTTPException, _http_handler)

@@ -11,10 +11,12 @@ ANA_ID = "u-ana"  # owns t-103, t-105, t-110
 BEN_ID = "u-ben"  # owns t-104, t-107
 CLEO_ID = "u-cleo"  # owns t-102, t-108
 
-
 @pytest.fixture
-def client() -> TestClient:
-    return TestClient(create_app())
+def client(monkeypatch, tmp_path) -> TestClient:
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/test.db")
+    app_client = TestClient(create_app())
+    yield app_client
+    app_client.app.state.store.close()
 
 
 def login(client: TestClient, user_id: str, password: str = SEED_PASSWORD) -> str:

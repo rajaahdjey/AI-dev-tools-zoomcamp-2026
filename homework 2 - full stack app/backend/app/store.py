@@ -1,17 +1,26 @@
-"""In-memory store: users, tasks, sessions + seed data.
+"""SQLAlchemy-backed store with the same API/semantics the mock defined.
 
-Business rules mirror frontend/src/services/mockBackend.js exactly:
-DevOps can do anything; developers only their own assigned tasks;
-unassigned tasks are read-only for developers; only DevOps can
+Business rules: DevOps can do anything; developers only their own assigned
+tasks; unassigned tasks are read-only for developers; only DevOps can
 assign/reassign, create, or delete.
+
+Sessions (bearer tokens) stay in memory on purpose: they are ephemeral and
+die with the process / on reseed, while board data persists in the DB.
 """
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
+from contextlib import contextmanager
+from typing import Iterator
+
+from sqlalchemy.orm import Session
 
 from . import auth
+from .db import Base, create_engine_for_url, session_factory
+from .db_models import CommentRow, EventRow, TaskRow, UserRow
 from .models import (
     COMMENT_MAX,
     DESCRIPTION_MAX,
@@ -27,6 +36,9 @@ from .models import (
     User,
     UserInDB,
 )
+
+DATABASE_URL_ENV = "DATABASE_URL"
+DEFAULT_DATABASE_URL = "sqlite:///./kanban.db"
 
 SEED_PASSWORD = "password123"
 
@@ -45,6 +57,30 @@ def now_ms() -> int:
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
+def _user_model(row: UserRow) -> UserInDB:
+    return UserInDB(id=row.id, name=row.name, role=row.role, password_hash=row.password_hash)
+
+
+def _task_model(row: TaskRow) -> Task:
+    comments = sorted(row.comments, key=lambda c: (c.at, c.id))
+    events = sorted(row.events, key=lambda e: (e.at, e.id))
+    return Task(
+        id=row.id,
+        title=row.title,
+        description=row.description,
+        status=row.status,
+        assigneeId=row.assignee_id,
+        priority=row.priority,
+        createdBy=row.created_by,
+        createdAt=row.created_at,
+        updatedAt=row.updated_at,
+        comments=[Comment(id=c.id, authorId=c.author_id, at=c.at, body=c.body) for c in comments],
+        events=[
+            Event(id=e.id, type=e.type, actorId=e.actor_id, at=e.at, detail=e.detail) for e in events
+        ],
+    )
 
 
 def _seed_tasks(base: int) -> list[dict]:
@@ -168,33 +204,67 @@ def _seed_tasks(base: int) -> list[dict]:
     ]
 
 
-class InMemoryStore:
-    def __init__(self, seed: bool = True):
-        self.users: dict[str, UserInDB] = {}
-        self.tasks: dict[str, Task] = {}
-        self.tokens: dict[str, str] = {}  # token -> user id
+class SqlAlchemyStore:
+    def __init__(self, seed: bool = True, database_url: str | None = None):
+        self.database_url = database_url or os.environ.get(DATABASE_URL_ENV, DEFAULT_DATABASE_URL)
+        self.engine = create_engine_for_url(self.database_url)
+        Base.metadata.create_all(self.engine)
+        self._factory = session_factory(self.engine)
+        self.tokens: dict[str, str] = {}  # token -> user id (ephemeral)
         if seed:
             self.seed()
+
+    def close(self) -> None:
+        self.engine.dispose()
+
+    @contextmanager
+    def _db(self) -> Iterator[Session]:
+        s = self._factory()
+        try:
+            yield s
+            s.commit()
+        except Exception:
+            s.rollback()
+            raise
+        finally:
+            s.close()
 
     # ----- seed -----
 
     def seed(self) -> None:
-        self.users = {
-            id: UserInDB(id=id, name=name, role=role, password_hash=auth.hash_password(SEED_PASSWORD))
-            for id, name, role in _SEED_USERS
-        }
-        base = now_ms()
-        self.tasks = {t["id"]: Task(**t) for t in _seed_tasks(base)}
+        with self._db() as s:
+            s.query(EventRow).delete()
+            s.query(CommentRow).delete()
+            s.query(TaskRow).delete()
+            s.query(UserRow).delete()
+            for id, name, role in _SEED_USERS:
+                s.add(UserRow(id=id, name=name, role=role,
+                              password_hash=auth.hash_password(SEED_PASSWORD)))
+            base = now_ms()
+            for t in _seed_tasks(base):
+                row = TaskRow(
+                    id=t["id"], title=t["title"], description=t["description"],
+                    status=t["status"], assignee_id=t["assigneeId"], priority=t["priority"],
+                    created_by=t["createdBy"], created_at=t["createdAt"], updated_at=t["updatedAt"],
+                )
+                for c in t["comments"]:
+                    row.comments.append(CommentRow(
+                        id=c["id"], task_id=t["id"], author_id=c["authorId"], at=c["at"], body=c["body"]))
+                for e in t["events"]:
+                    row.events.append(EventRow(
+                        id=e["id"], task_id=t["id"], type=e["type"], actor_id=e["actorId"],
+                        at=e["at"], detail=e["detail"]))
+                s.add(row)
         self.tokens = {}
 
-    # ----- sessions -----
+    # ----- sessions (in-memory, ephemeral) -----
 
     def create_session(self, token: str, user_id: str) -> None:
         self.tokens[token] = user_id
 
     def get_user_by_token(self, token: str) -> UserInDB | None:
         user_id = self.tokens.get(token)
-        return self.users.get(user_id) if user_id else None
+        return self.get_user(user_id) if user_id else None
 
     def delete_session(self, token: str) -> None:
         self.tokens.pop(token, None)
@@ -202,13 +272,17 @@ class InMemoryStore:
     # ----- users -----
 
     def list_users(self) -> list[User]:
-        return [u.public() for u in self.users.values()]
+        with self._db() as s:
+            rows = s.query(UserRow).order_by(UserRow.id).all()
+            return [_user_model(r).public() for r in rows]
 
     def get_user(self, user_id: str) -> UserInDB | None:
-        return self.users.get(user_id)
+        with self._db() as s:
+            row = s.get(UserRow, user_id)
+            return _user_model(row) if row else None
 
     def get_developer_or_throw(self, user_id: str) -> UserInDB:
-        u = self.users.get(user_id)
+        u = self.get_user(user_id)
         if u is None or u.role != "developer":
             raise ApiError(422, "Assignee must be a developer.")
         return u
@@ -233,13 +307,22 @@ class InMemoryStore:
     # ----- tasks -----
 
     def list_tasks(self) -> list[Task]:
-        return list(self.tasks.values())
+        with self._db() as s:
+            rows = s.query(TaskRow).order_by(TaskRow.created_at, TaskRow.id).all()
+            return [_task_model(r) for r in rows]
 
     def get_task_or_throw(self, task_id: str) -> Task:
-        t = self.tasks.get(task_id)
-        if t is None:
+        with self._db() as s:
+            row = s.get(TaskRow, task_id)
+            if row is None:
+                raise ApiError(404, "Task not found. It may have been deleted.")
+            return _task_model(row)
+
+    def _row_or_throw(self, s: Session, task_id: str) -> TaskRow:
+        row = s.get(TaskRow, task_id)
+        if row is None:
             raise ApiError(404, "Task not found. It may have been deleted.")
-        return t
+        return row
 
     def create_task(self, input: CreateTask, actor: User) -> Task:
         if not auth.is_devops(actor):
@@ -258,94 +341,101 @@ class InMemoryStore:
         if len(input.description or "") > DESCRIPTION_MAX:
             raise ApiError(422, "Description is too long.")
         now = now_ms()
-        t = Task(
-            id=_new_id("t"),
-            title=title,
-            description=input.description or "",
-            status=input.status,
-            assigneeId=input.assigneeId,
-            priority=input.priority,
-            createdBy=actor.id,
-            createdAt=now,
-            updatedAt=now,
-            comments=[],
-            events=[Event(id=_new_id("e"), type="created", actorId=actor.id, at=now,
-                           detail=f"Created in {input.status}")],
-        )
-        self.tasks[t.id] = t
-        return t
+        with self._db() as s:
+            row = TaskRow(
+                id=_new_id("t"), title=title, description=input.description or "",
+                status=input.status, assignee_id=input.assigneeId, priority=input.priority,
+                created_by=actor.id, created_at=now, updated_at=now,
+            )
+            row.events.append(EventRow(
+                id=_new_id("e"), task_id=row.id, type="created",
+                actor_id=actor.id, at=now, detail=f"Created in {input.status}"))
+            s.add(row)
+            s.flush()
+            return _task_model(row)
 
     def update_task(self, task_id: str, patch: UpdateTask, actor: User) -> Task:
-        t = self.get_task_or_throw(task_id)
+        with self._db() as s:
+            row = self._row_or_throw(s, task_id)
 
-        if "assigneeId" in patch.model_fields_set and patch.assigneeId != t.assigneeId:
-            if not auth.is_devops(actor):
-                raise ApiError(403, "Only DevOps can assign tasks.")
-            if patch.assigneeId is not None:
-                self.get_developer_or_throw(patch.assigneeId)
-            t.assigneeId = patch.assigneeId
-            t.updatedAt = now_ms()
-            name = self.users[patch.assigneeId].name if patch.assigneeId else "Unassigned"
-            self._log(t, "assigned", actor.id, f"Assigned to {name}")
+            if "assigneeId" in patch.model_fields_set and patch.assigneeId != row.assignee_id:
+                if not auth.is_devops(actor):
+                    raise ApiError(403, "Only DevOps can assign tasks.")
+                if patch.assigneeId is not None:
+                    self.get_developer_or_throw(patch.assigneeId)
+                row.assignee_id = patch.assigneeId
+                row.updated_at = now_ms()
+                name = "Unassigned"
+                if patch.assigneeId is not None:
+                    assignee = s.get(UserRow, patch.assigneeId)
+                    name = assignee.name if assignee else patch.assigneeId
+                self._log(s, row, "assigned", actor.id, f"Assigned to {name}")
 
-        wants_scalar = any(
-            getattr(patch, f) is not None for f in ("title", "description", "priority", "status")
-        )
-        if wants_scalar:
-            self.assert_can_mutate(t, actor)
+            wants_scalar = any(
+                getattr(patch, f) is not None for f in ("title", "description", "priority", "status")
+            )
+            if wants_scalar:
+                self.assert_can_mutate(_task_model(row), actor)
 
-        if patch.title is not None:
-            title = patch.title.strip()
-            if not title:
-                raise ApiError(422, "Title is required.")
-            if len(title) > TITLE_MAX:
-                raise ApiError(422, "Title must be 120 characters or fewer.")
-            if title != t.title:
-                t.title = title
-                t.updatedAt = now_ms()
-                self._log(t, "edited", actor.id, "Edited title")
-        if patch.description is not None and patch.description != t.description:
-            if len(patch.description) > DESCRIPTION_MAX:
-                raise ApiError(422, "Description is too long.")
-            t.description = patch.description
-            t.updatedAt = now_ms()
-            self._log(t, "edited", actor.id, "Edited description")
-        if patch.priority is not None and patch.priority != t.priority:
-            if patch.priority not in PRIORITIES:
-                raise ApiError(422, "Invalid priority.")
-            t.priority = patch.priority
-            t.updatedAt = now_ms()
-            self._log(t, "edited", actor.id, f"Priority → {patch.priority}")
-        if patch.status is not None and patch.status != t.status:
-            if patch.status not in STATUSES:
-                raise ApiError(422, "Invalid status.")
-            from_status = t.status
-            t.status = patch.status
-            t.updatedAt = now_ms()
-            self._log(t, "moved", actor.id, f"{from_status} → {patch.status}")
-        return t
+            if patch.title is not None:
+                title = patch.title.strip()
+                if not title:
+                    raise ApiError(422, "Title is required.")
+                if len(title) > TITLE_MAX:
+                    raise ApiError(422, "Title must be 120 characters or fewer.")
+                if title != row.title:
+                    row.title = title
+                    row.updated_at = now_ms()
+                    self._log(s, row, "edited", actor.id, "Edited title")
+            if patch.description is not None and patch.description != row.description:
+                if len(patch.description) > DESCRIPTION_MAX:
+                    raise ApiError(422, "Description is too long.")
+                row.description = patch.description
+                row.updated_at = now_ms()
+                self._log(s, row, "edited", actor.id, "Edited description")
+            if patch.priority is not None and patch.priority != row.priority:
+                if patch.priority not in PRIORITIES:
+                    raise ApiError(422, "Invalid priority.")
+                row.priority = patch.priority
+                row.updated_at = now_ms()
+                self._log(s, row, "edited", actor.id, f"Priority → {patch.priority}")
+            if patch.status is not None and patch.status != row.status:
+                if patch.status not in STATUSES:
+                    raise ApiError(422, "Invalid status.")
+                from_status = row.status
+                row.status = patch.status
+                row.updated_at = now_ms()
+                self._log(s, row, "moved", actor.id, f"{from_status} → {patch.status}")
+            s.flush()
+            return _task_model(row)
 
     def add_comment(self, task_id: str, body: str, actor: User) -> Comment:
-        t = self.get_task_or_throw(task_id)
-        self.assert_can_mutate(t, actor)
-        text = (body or "").strip()
-        if not text:
-            raise ApiError(422, "Comment cannot be empty.")
-        if len(text) > COMMENT_MAX:
-            raise ApiError(422, "Comment must be 2000 characters or fewer.")
-        c = Comment(id=_new_id("c"), authorId=actor.id, at=now_ms(), body=text)
-        t.comments.append(c)
-        t.updatedAt = now_ms()
-        self._log(t, "commented", actor.id, "Added a status note")
-        return c
+        with self._db() as s:
+            row = self._row_or_throw(s, task_id)
+            self.assert_can_mutate(_task_model(row), actor)
+            text = (body or "").strip()
+            if not text:
+                raise ApiError(422, "Comment cannot be empty.")
+            if len(text) > COMMENT_MAX:
+                raise ApiError(422, "Comment must be 2000 characters or fewer.")
+            c = CommentRow(id=_new_id("c"), task_id=row.id, author_id=actor.id,
+                           at=now_ms(), body=text)
+            row.comments.append(c)
+            row.updated_at = now_ms()
+            self._log(s, row, "commented", actor.id, "Added a status note")
+            s.flush()
+            return Comment(id=c.id, authorId=c.author_id, at=c.at, body=c.body)
 
     def delete_task(self, task_id: str, actor: User) -> None:
         if not auth.is_devops(actor):
             raise ApiError(403, "Only DevOps can delete tasks.")
-        if task_id not in self.tasks:
-            raise ApiError(404, "Task not found. It may have been deleted.")
-        del self.tasks[task_id]
+        with self._db() as s:
+            row = self._row_or_throw(s, task_id)
+            s.delete(row)  # comments/events cascade
 
     @staticmethod
-    def _log(task: Task, type: str, actor_id: str, detail: str) -> None:
-        task.events.append(Event(id=_new_id("e"), type=type, actorId=actor_id, at=now_ms(), detail=detail))
+    def _log(_s: Session, row: TaskRow, type: str, actor_id: str, detail: str) -> None:
+        # Append via the relationship (not session.add): the events collection
+        # may already be loaded in this session, and must include the new row.
+        row.events.append(EventRow(id=_new_id("e"), task_id=row.id, type=type,
+                           actor_id=actor_id, at=now_ms(), detail=detail))
