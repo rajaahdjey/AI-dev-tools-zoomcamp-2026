@@ -212,7 +212,7 @@ class SqlAlchemyStore:
         self._factory = session_factory(self.engine)
         self.tokens: dict[str, str] = {}  # token -> user id (ephemeral)
         if seed:
-            self.seed()
+            self.ensure_seeded()
 
     def close(self) -> None:
         self.engine.dispose()
@@ -230,6 +230,15 @@ class SqlAlchemyStore:
             s.close()
 
     # ----- seed -----
+
+    def ensure_seeded(self) -> None:
+        # Boot must never wipe user data: only a fresh database (no users —
+        # users can never be deleted via the API) gets the demo seed.
+        # Explicit reseeds (admin reset) call seed() directly.
+        with self._db() as s:
+            fresh = s.query(UserRow.id).first() is None
+        if fresh:
+            self.seed()
 
     def seed(self) -> None:
         with self._db() as s:

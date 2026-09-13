@@ -25,7 +25,8 @@ def test_board_survives_restart_on_same_file(tmp_path, monkeypatch):
                    json={"body": "still here"}).status_code == 201
     c1.app.state.store.close()
 
-    c2 = TestClient(create_app(seed=False))
+    # Reboot with the default seed=True: must keep user data, not reseed.
+    c2 = TestClient(create_app())
     try:
         fresh = {"Authorization": f"Bearer {login(c2, DEVOPS_ID)}"}
         tasks = {t["id"]: t for t in c2.get("/api/tasks", headers=fresh).json()}
