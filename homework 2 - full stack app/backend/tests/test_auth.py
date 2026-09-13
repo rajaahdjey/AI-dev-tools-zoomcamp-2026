@@ -5,6 +5,11 @@ from fastapi.testclient import TestClient
 from app.store import SEED_PASSWORD
 from .conftest import ANA_ID, DEVOPS_ID, login
 
+def test_me_returns_caller_and_needs_auth(client: TestClient):
+    assert client.get("/api/auth/me").status_code == 401
+    headers = {"Authorization": f"Bearer {login(client, ANA_ID)}"}
+    assert client.get("/api/auth/me", headers=headers).json()["id"] == ANA_ID
+
 
 def test_login_returns_token_and_user(client: TestClient):
     r = client.post("/api/auth/login", json={"userId": DEVOPS_ID, "password": SEED_PASSWORD})

@@ -17,6 +17,10 @@ def login(body: LoginRequest, request: Request) -> TokenResponse:
     return TokenResponse(access_token=token, user=user.public())
 
 
+@router.get("/me", response_model=User)
+def me(user: User = Depends(auth.get_current_user)) -> User:
+    return user
+
 @router.post("/logout", status_code=204, response_class=Response)
 def logout(
     request: Request,

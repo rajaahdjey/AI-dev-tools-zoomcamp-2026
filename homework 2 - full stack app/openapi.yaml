@@ -49,6 +49,35 @@ paths:
           description: Revoked. No body.
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /api/auth/me:
+    get:
+      summary: Get session user
+      description: Resolve the caller's bearer token to its public user.
+      operationId: getMe
+      responses:
+        '200':
+          description: The calling user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/admin/reset:
+    post:
+      summary: Reset demo data
+      description: >-
+        Reseed the in-memory store (seed users, tasks, events) and revoke all
+        sessions. DevOps only. Backs the frontend Reset demo button, which
+        returns to the login screen afterwards since its token is revoked too.
+      operationId: resetDemo
+      responses:
+        '204':
+          description: Reseeded. No body.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /api/users:
     get:
       summary: List users

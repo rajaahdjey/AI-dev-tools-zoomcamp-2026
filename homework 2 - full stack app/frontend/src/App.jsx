@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   ApiError,
+  DEMO_USERS,
   addComment,
   canComment,
   canEdit,
@@ -8,8 +9,12 @@ import {
   createTask,
   deleteTask,
   getUsers,
+  hasSession,
   isDevOps,
   listTasks,
+  login,
+  logout,
+  me,
   resetDemo,
   updateTask,
 } from './services/backend.js'
@@ -131,9 +136,9 @@ function Drawer({ task, users, currentUser, onClose, onChanged, notify }) {
     try {
       // Reassign first (DevOps-only on the backend), then scalar fields.
       if ((assigneeId || null) !== (task.assigneeId ?? null)) {
-        await updateTask(task.id, { assigneeId: assigneeId || null }, currentUser.id)
+        await updateTask(task.id, { assigneeId: assigneeId || null })
       }
-      await updateTask(task.id, { title, description, priority, status }, currentUser.id)
+      await updateTask(task.id, { title, description, priority, status })
       notify('success', 'Task updated.')
       await onChanged()
     } catch (e) {
@@ -149,7 +154,7 @@ function Drawer({ task, users, currentUser, onClose, onChanged, notify }) {
     setSaving(true)
     setError('')
     try {
-      await addComment(task.id, draftComment, currentUser.id)
+      await addComment(task.id, draftComment)
       setDraftComment('')
       await onChanged()
     } catch (err) {
@@ -162,7 +167,7 @@ function Drawer({ task, users, currentUser, onClose, onChanged, notify }) {
   async function handleDelete() {
     if (!window.confirm(`Delete "${task.title}"?`)) return
     try {
-      await deleteTask(task.id, currentUser.id)
+      await deleteTask(task.id)
       notify('success', 'Task deleted.')
       await onChanged()
       onClose()
@@ -278,7 +283,7 @@ function Drawer({ task, users, currentUser, onClose, onChanged, notify }) {
   )
 }
 
-function CreateModal({ users, onClose, onCreated, notify, actor }) {
+function CreateModal({ users, onClose, onCreated, notify }) {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [assigneeId, setAssigneeId] = useState('')
@@ -292,7 +297,7 @@ function CreateModal({ users, onClose, onCreated, notify, actor }) {
     setSaving(true)
     setError('')
     try {
-      await createTask({ title, description, assigneeId: assigneeId || null, priority, status }, actor.id)
+      await createTask({ title, description, assigneeId: assigneeId || null, priority, status })
       notify('success', 'Task created.')
       await onCreated()
       onClose()
@@ -359,6 +364,11 @@ export default function App() {
   const [tasks, setTasks] = useState([])
   const [loading, setLoading] = useState(true)
   const [currentUserId, setCurrentUserId] = useState('')
+  const [needsLogin, setNeedsLogin] = useState(false)
+  const [loginId, setLoginId] = useState('u-devops')
+  const [loginPw, setLoginPw] = useState('')
+  const [loginError, setLoginError] = useState('')
+  const [loginBusy, setLoginBusy] = useState(false)
   const [q, setQ] = useState('')
   const [assigneeFilter, setAssigneeFilter] = useState('all')
   const [priorityFilter, setPriorityFilter] = useState('all')
@@ -376,23 +386,64 @@ export default function App() {
   }, [])
 
   const refresh = useCallback(async () => {
-    setTasks(await listTasks())
+    try {
+      setTasks(await listTasks())
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) setNeedsLogin(true)
+      else throw e
+    }
+  }, [])
+
+  const loadBoard = useCallback(async () => {
+    const [u, t] = await Promise.all([getUsers(), listTasks()])
+    setUsers(u)
+    setTasks(t)
   }, [])
 
   useEffect(() => {
     ;(async () => {
+      if (!hasSession()) {
+        setNeedsLogin(true)
+        setLoading(false)
+        return
+      }
       try {
-        const [u, t] = await Promise.all([getUsers(), listTasks()])
-        setUsers(u)
-        setTasks(t)
-        setCurrentUserId(u[0]?.id ?? '')
+        await loadBoard()
+        setCurrentUserId((await me()).id)
       } catch (e) {
-        notify('error', errMsg(e))
+        if (e instanceof ApiError && e.status === 401) setNeedsLogin(true)
+        else notify('error', errMsg(e))
       } finally {
         setLoading(false)
       }
     })()
-  }, [notify])
+  }, [loadBoard, notify])
+
+  async function handleLogin(e) {
+    e.preventDefault()
+    setLoginBusy(true)
+    setLoginError('')
+    try {
+      const user = await login(loginId, loginPw)
+      setLoginPw('')
+      await loadBoard()
+      setCurrentUserId(user.id)
+      setNeedsLogin(false)
+      notify('success', `Welcome, ${user.name}.`)
+    } catch (err) {
+      setLoginError(errMsg(err))
+    } finally {
+      setLoginBusy(false)
+    }
+  }
+
+  async function handleLogout() {
+    await logout()
+    setUsers([])
+    setTasks([])
+    setCurrentUserId('')
+    setNeedsLogin(true)
+  }
 
   // Esc closes drawer / modal.
   useEffect(() => {
@@ -460,7 +511,7 @@ export default function App() {
     setDraggingId(null)
     if (!task || task.status === toStatus) return // no-op on same column
     try {
-      await updateTask(id, { status: toStatus }, currentUser.id)
+      await updateTask(id, { status: toStatus })
       notify('success', `Moved to ${toStatus}.`)
       await refresh()
     } catch (e) {
@@ -470,12 +521,49 @@ export default function App() {
 
   async function handleReset() {
     if (!window.confirm('Reset demo data? Local changes will be lost.')) return
-    await resetDemo()
-    await refresh()
-    notify('success', 'Demo data reset.')
+    try {
+      await resetDemo()
+    } catch (e) {
+      notify('error', errMsg(e))
+      return
+    }
+    setUsers([])
+    setTasks([])
+    setCurrentUserId('')
+    setNeedsLogin(true) // reseed revokes all sessions
+    notify('success', 'Demo data reset. Please log in again.')
   }
 
   if (loading) return <div className="loading">Loading board…</div>
+
+  if (needsLogin) {
+    return (
+      <div className="login-wrap">
+        <form className="login-card" onSubmit={handleLogin}>
+          <h1>Mini Kanban</h1>
+          <p className="sub">Log in with a seeded user (password: password123).</p>
+          {loginError ? <div className="error">{loginError}</div> : null}
+          <div className="field">
+            <label>User</label>
+            <select value={loginId} onChange={(e) => setLoginId(e.target.value)}>
+              {DEMO_USERS.map((u) => <option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>Password</label>
+            <input
+              type="password"
+              value={loginPw}
+              onChange={(e) => setLoginPw(e.target.value)}
+              placeholder="password123"
+              autoComplete="current-password"
+            />
+          </div>
+          <button className="btn btn-primary" disabled={loginBusy}>Log in</button>
+        </form>
+      </div>
+    )
+  }
 
   return (
     <>
@@ -489,13 +577,11 @@ export default function App() {
             </div>
           </div>
           <div className="userbox">
-            <label htmlFor="user">Acting as</label>
-            <select id="user" value={currentUserId} onChange={(e) => setCurrentUserId(e.target.value)}>
-              {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-            </select>
+            <span className="user-name">{currentUser?.name}</span>
             {currentUser ? (
               <span className={`role-badge ${currentUser.role}`}>{currentUser.role}</span>
             ) : null}
+            <button className="btn btn-ghost" onClick={handleLogout}>Log out</button>
           </div>
         </div>
       </header>
@@ -583,7 +669,6 @@ export default function App() {
       {showCreate && currentUser ? (
         <CreateModal
           users={users}
-          actor={currentUser}
           onClose={() => setShowCreate(false)}
           onCreated={refresh}
           notify={notify}

@@ -279,3 +279,10 @@ select:focus, input:focus, textarea:focus {
 .toast button:hover { opacity: 1; }
 
 .loading { padding: 40px; text-align: center; color: var(--muted); }
+
+/* ---------- Login ---------- */
+.login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.login-card { width: min(380px, 100%); background: #fff; border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow-lg); padding: 24px; display: flex; flex-direction: column; gap: 12px; }
+.login-card h1 { margin: 0; font-size: 20px; }
+.login-card .sub { margin: 0; font-size: 13px; color: var(--muted); }
+.user-name { font-weight: 600; font-size: 14px; }

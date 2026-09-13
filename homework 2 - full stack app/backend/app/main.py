@@ -11,6 +11,7 @@ from .models import ApiError
 from .routers import auth as auth_router
 from .routers import tasks as tasks_router
 from .routers import users as users_router
+from .routers import admin as admin_router
 from .store import InMemoryStore
 
 
@@ -42,6 +43,7 @@ def create_app(seed: bool = True) -> FastAPI:
     app.add_exception_handler(ApiError, _api_error_handler)
     app.add_exception_handler(RequestValidationError, _validation_handler)
     app.add_exception_handler(StarletteHTTPException, _http_handler)
+    app.include_router(admin_router.router)
     app.include_router(auth_router.router)
     app.include_router(users_router.router)
     app.include_router(tasks_router.router)
