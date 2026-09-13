@@ -10,12 +10,12 @@ install: ## Install backend + frontend dependencies
 	$(MAKE) -C backend install
 	npm --prefix frontend ci
 
-dev: ## Run backend + frontend together (Ctrl-C stops both)
+dev: ## Run backend + frontend together (Ctrl-C stops both; frees 5173 first)
+	@command -v lsof >/dev/null && lsof -ti:5173 | xargs kill -9 2>/dev/null; true
 	trap 'kill 0' INT TERM; \
 	$(MAKE) -C backend run & \
 	npm --prefix frontend run dev & \
 	wait
-
 backend: ## Run the backend API only
 	$(MAKE) -C backend run
 
