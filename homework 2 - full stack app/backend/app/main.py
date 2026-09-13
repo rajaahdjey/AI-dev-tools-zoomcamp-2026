@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .models import ApiError
@@ -37,6 +41,12 @@ async def _http_handler(_request: Request, exc: StarletteHTTPException) -> JSONR
     return _error(exc.status_code, detail)
 
 
+def _frontend_dir() -> Path | None:
+    override = os.environ.get("FRONTEND_DIR")
+    dist = Path(override) if override else Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+    return dist if dist.is_dir() else None
+
+
 def create_app(seed: bool = True, database_url: str | None = None) -> FastAPI:
     app = FastAPI(title="Mini Kanban Board API", version="1.0.0")
     app.state.store = SqlAlchemyStore(seed=seed, database_url=database_url)
@@ -47,6 +57,10 @@ def create_app(seed: bool = True, database_url: str | None = None) -> FastAPI:
     app.include_router(auth_router.router)
     app.include_router(users_router.router)
     app.include_router(tasks_router.router)
+    # Serve the built SPA last so /api/* routes above always win.
+    # Absent in dev (vite serves it); present in the Docker image.
+    if (dist := _frontend_dir()) is not None:
+        app.mount("/", StaticFiles(directory=dist, html=True), name="frontend")
     return app
 
 
