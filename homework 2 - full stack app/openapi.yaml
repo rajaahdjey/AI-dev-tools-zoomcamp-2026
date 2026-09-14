@@ -1,0 +1,470 @@
+openapi: 3.0.3
+info:
+  title: Mini Kanban Board API
+  version: 1.0.0
+  description: >-
+    Backend contract expected by frontend/src/services/backend.js, implemented
+    by backend/ (FastAPI, in-memory store seeded like the mock). Auth is bearer
+    tokens from POST /api/auth/login; every other endpoint requires one. All
+    timestamps are unix milliseconds (Date.now()).
+    resetDemo() is localStorage-only demo state and has no HTTP equivalent;
+    canMove/canEdit/canComment/isDevOps are pure client-side helpers, not endpoints.
+servers:
+  - url: http://localhost:8000
+    description: Local backend (frontend dev server runs on :5173)
+security:
+  - BearerAuth: []
+paths:
+  /api/auth/login:
+    post:
+      summary: Log in
+      description: >-
+        Verify userId + password (PBKDF2-hashed server-side; seeded users use
+        "password123") and issue an opaque bearer token. The only endpoint
+        that needs no authentication.
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Token plus the public user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/auth/logout:
+    post:
+      summary: Log out
+      description: Revoke the caller's bearer token. Further use returns 401.
+      operationId: logout
+      responses:
+        '204':
+          description: Revoked. No body.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/auth/me:
+    get:
+      summary: Get session user
+      description: Resolve the caller's bearer token to its public user.
+      operationId: getMe
+      responses:
+        '200':
+          description: The calling user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/admin/reset:
+    post:
+      summary: Reset demo data
+      description: >-
+        Reseed the in-memory store (seed users, tasks, events) and revoke all
+        sessions. DevOps only. Backs the frontend Reset demo button, which
+        returns to the login screen afterwards since its token is revoked too.
+      operationId: resetDemo
+      responses:
+        '204':
+          description: Reseeded. No body.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/users:
+    get:
+      summary: List users
+      description: >-
+        Backs getUsers(). Used for the user switcher, assignee dropdown
+        (role == developer only), and filters. No request arguments.
+      operationId: getUsers
+      responses:
+        '200':
+          description: All users (1 devops + N developers, seeded).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/tasks:
+    get:
+      summary: List all tasks
+      description: >-
+        Backs listTasks(). Returns full task objects (including comments and
+        events); grouping by status, sorting (priority desc, updatedAt desc),
+        text search, assignee/priority filters, and "My tasks only" are all
+        applied client-side in App.jsx. Takes no query parameters.
+      operationId: listTasks
+      responses:
+        '200':
+          description: All tasks.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Task'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      summary: Create task
+      description: >-
+        Backs createTask(input, actorId). DevOps only; developers get 403
+        ("Only DevOps can create tasks."). assigneeId must reference an
+        existing developer user or be null (a devops id is rejected).
+      operationId: createTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTask'
+      responses:
+        '201':
+          description: Created task (with a 'created' event).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /api/tasks/{id}:
+    get:
+      summary: Get task detail
+      description: >-
+        Backs getTask(id). Returns the task with full comments thread and
+        activity events for the detail drawer. (Exported by the API client;
+        App.jsx currently resolves the selected card from the list instead.)
+      operationId: getTask
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: The task.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      summary: Update task
+      description: >-
+        Backs updateTask(id, patch, actorId). The drawer sends reassignment
+        first as { assigneeId } then scalars as { title, description, priority,
+        status }; drag-and-drop sends { status } alone. Rules: only DevOps can
+        change assigneeId (developer attempt -> 403 "Only DevOps can assign
+        tasks."); any other field requires mutate rights — DevOps anything,
+        developer only tasks assigned to them (else 403 "Only the assignee can
+        modify this task." / "Only DevOps can modify unassigned tasks.").
+        Same-column drop sends no request (client no-op).
+      operationId: updateTask
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTask'
+      responses:
+        '200':
+          description: Updated task (each applied change appends an event and bumps updatedAt).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+    delete:
+      summary: Delete task
+      description: >-
+        Backs deleteTask(id, actorId). DevOps only ("Only DevOps can delete
+        tasks."). An open drawer on a deleted task shows "Task deleted".
+      operationId: deleteTask
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '204':
+          description: Deleted. No body.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/tasks/{id}/comments:
+    post:
+      summary: Add comment
+      description: >-
+        Backs addComment(taskId, body, actorId). Requires mutate rights on the
+        task (owner-developer or DevOps); append-only, no edit/delete in v1.
+        Bumps the task updatedAt and logs a 'commented' event without changing
+        status. Body is trimmed; blank rejected.
+      operationId: addComment
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateComment'
+      responses:
+        '201':
+          description: Created comment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comment'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: >-
+        Opaque token from POST /api/auth/login, sent as
+        `Authorization: Bearer <token>`. Every endpoint except login requires
+        one; missing/invalid/revoked token -> 401.
+  parameters:
+    TaskId:
+      name: id
+      in: path
+      required: true
+      description: Task id.
+      schema:
+        type: string
+  responses:
+    Unauthorized:
+      description: Unknown/missing user.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Permission denied (role/ownership check failed, no state change).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Task not found ("Task not found. It may have been deleted.").
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ValidationError:
+      description: Validation failed (blank/oversize title, bad enum, bad assignee, blank/oversize comment).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    User:
+      type: object
+      required: [id, name, role]
+      properties:
+        id:
+          type: string
+          example: u-ana
+        name:
+          type: string
+          example: Ana Ruiz
+        role:
+          type: string
+          enum: [devops, developer]
+    Task:
+      type: object
+      required: [id, title, description, status, assigneeId, priority, createdBy, createdAt, updatedAt, comments, events]
+      properties:
+        id:
+          type: string
+          example: t-101
+        title:
+          type: string
+          maxLength: 120
+          example: Set up CI pipeline for staging
+        description:
+          type: string
+          maxLength: 5000
+          example: 'GitHub Actions: lint, test, build on every PR.'
+        status:
+          $ref: '#/components/schemas/Status'
+        assigneeId:
+          type: string
+          nullable: true
+          description: Assigned developer id, or null when unassigned.
+          example: u-ana
+        priority:
+          $ref: '#/components/schemas/Priority'
+        createdBy:
+          type: string
+          description: DevOps user id that created the task.
+          example: u-devops
+        createdAt:
+          type: integer
+          format: int64
+          description: Unix time in milliseconds.
+        updatedAt:
+          type: integer
+          format: int64
+          description: Unix time in milliseconds; bumped by every mutation and comment.
+        comments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Comment'
+        events:
+          type: array
+          description: Activity log (created, assigned, moved, edited, commented), newest last in storage; drawer renders reversed.
+          items:
+            $ref: '#/components/schemas/Event'
+    Comment:
+      type: object
+      required: [id, authorId, at, body]
+      properties:
+        id:
+          type: string
+          example: c-1
+        authorId:
+          type: string
+          example: u-ana
+        at:
+          type: integer
+          format: int64
+          description: Unix time in milliseconds.
+        body:
+          type: string
+          maxLength: 2000
+          example: Staging pipeline is green.
+    Event:
+      type: object
+      required: [id, type, actorId, at, detail]
+      properties:
+        id:
+          type: string
+          example: e-101-1
+        type:
+          type: string
+          enum: [created, assigned, moved, edited, commented]
+        actorId:
+          type: string
+          example: u-devops
+        at:
+          type: integer
+          format: int64
+          description: Unix time in milliseconds.
+        detail:
+          type: string
+          example: Backlog → In Progress
+    Status:
+      type: string
+      enum: ['Backlog', 'To Do', 'In Progress', 'In Review', 'Done']
+    Priority:
+      type: string
+      enum: [Low, Medium, High]
+    CreateTask:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          maxLength: 120
+          description: Required, non-blank after trim.
+        description:
+          type: string
+          maxLength: 5000
+          default: ''
+        assigneeId:
+          type: string
+          nullable: true
+          default: null
+          description: Developer user id, or null for Unassigned.
+        priority:
+          $ref: '#/components/schemas/Priority'
+        status:
+          $ref: '#/components/schemas/Status'
+    UpdateTask:
+      type: object
+      minProperties: 1
+      properties:
+        title:
+          type: string
+          maxLength: 120
+          description: Non-blank after trim.
+        description:
+          type: string
+          maxLength: 5000
+        priority:
+          $ref: '#/components/schemas/Priority'
+        status:
+          $ref: '#/components/schemas/Status'
+        assigneeId:
+          type: string
+          nullable: true
+          description: DevOps only; must reference a developer or null.
+    CreateComment:
+      type: object
+      required: [body]
+      properties:
+        body:
+          type: string
+          maxLength: 2000
+          description: Required, non-blank after trim.
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: Only the assignee can modify this task.
+    LoginRequest:
+      type: object
+      required: [userId, password]
+      properties:
+        userId:
+          type: string
+          example: u-ana
+        password:
+          type: string
+          example: password123
+    TokenResponse:
+      type: object
+      required: [access_token, token_type, user]
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          example: bearer
+        user:
+          $ref: '#/components/schemas/User'

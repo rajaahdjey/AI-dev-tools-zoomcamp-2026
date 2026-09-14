@@ -1,0 +1,15 @@
+# dependencies
+node_modules/
+
+# vite build output
+dist/
+dist-ssr/
+
+# logs / editor
+*.log
+.DS_Store
+
+# python
+__pycache__/
+*.pyc
+*.db
